@@ -1,0 +1,103 @@
+node_modules/
+dist/
+!agent/dist/
+# Build OUTPUTS (produced by the build pipeline, never versioned). agent/dist/
+# is filled locally (Windows build + scp from the Mac/Linux hosts) before the
+# server image is built; .gitkeep keeps the folder for "COPY agent/dist/".
+agent/dist/*
+!agent/dist/.gitkeep
+agent/bin/*.exe
+agent/*.exe
+obli.tools/*.exe
+!desktop-app/dist/
+*.wixpdb
+*.tsbuildinfo
+coverage/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Secrets, keys, certificates (.env.example = template without secrets: kept)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.jks
+*.keystore
+*.pfx
+*.p12
+*.cer
+*.crt
+*.csr
+*.spc
+id_rsa*
+id_ed25519*
+# Build input: PUBLIC root CAs embedded in the nt6 agent (go:embed, tls_roots.go)
+!/agent/fallback_roots.pem
+
+# Logs, dumps, backups, captures, local data
+*.log
+**/*.log
+*.dmp
+*.bak
+*.orig
+*.pre-*
+*.tmp
+*.swp
+*~
+*.sqlite
+*.sqlite3
+*.db
+*.har
+*.pcap
+*.csv
+*.sql
+*.dump
+*.zip
+*.7z
+
+# Local tool state, caches, scratch areas (never versioned; every hidden
+# folder is also caught by ".*/" below, every *.md by "*.md")
+.cache/
+.local*/
+scratch*/
+# Any other hidden folder (editor/tool caches, secrets): never versioned.
+.*/
+
+# Local dev / planning notes
+custom/
+
+# ── Not part of the build: never versioned ──
+# Only what is needed to BUILD goes to GitHub. Docs may contain customer
+# data: never commit them. Docs, notes and local tooling
+# scripts (.bat/.ps1…) stay on the workstation.
+docs/
+/docs-*/
+doc/
+*.md
+!/README.md
+*.markdown
+*.txt
+!**/requirements*.txt
+*.rtf
+*.docx
+*.pdf
+*.bat
+*.cmd
+*.ps1
+*.psm1
+REPRISE*
+HANDOFF*
+NOTES*
+TODO*
+PLAN*
+mockup*.html
+# Obsolete / unused binaries (not referenced by the build)
+/agent/PawnIO_setup.exe
+# Build input: shipped inside the agent MSI (agent/installer/ is also copied
+# by server/Dockerfile).
+!/agent/installer/Uninstall-Obliview-PawnIO.ps1

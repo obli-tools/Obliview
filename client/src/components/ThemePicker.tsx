@@ -1,0 +1,579 @@
+import { Check } from 'lucide-react';
+import type { AppTheme } from '@/utils/theme';
+import { cn } from '@/utils/cn';
+
+interface ThemePickerProps {
+  value: AppTheme;
+  onChange: (theme: AppTheme) => void;
+}
+
+/* ─── SVG mini-dashboard previews ─────────────────────────────────────────── */
+
+function ModernPreviewSvg() {
+  return (
+    <svg viewBox="0 0 280 170" xmlns="http://www.w3.org/2000/svg" className="w-full rounded-md">
+      {/* Page background */}
+      <rect width="280" height="170" fill="#0d1117" rx="6" />
+
+      {/* Sidebar */}
+      <rect x="0" y="0" width="60" height="170" fill="#161b22" rx="6" />
+      <rect x="60" y="0" width="1" height="170" fill="#30363d" />
+      {/* Sidebar logo area */}
+      <rect x="10" y="12" width="16" height="16" rx="3" fill="#58a6ff" opacity="0.9" />
+      <rect x="31" y="15" width="22" height="5" rx="2" fill="#8b949e" />
+      {/* Sidebar nav items */}
+      {[40, 62, 84, 106].map((y, i) => (
+        <g key={y}>
+          <rect x="7" y={y} width="46" height="16" rx="3"
+            fill={i === 0 ? '#1c2333' : 'transparent'} />
+          <rect x="13" y={y + 4} width="8" height="8" rx="2"
+            fill={i === 0 ? '#58a6ff' : '#6e7681'} />
+          <rect x="25" y={y + 6} width={i === 0 ? 22 : 18} height="4" rx="2"
+            fill={i === 0 ? '#e6edf3' : '#6e7681'} />
+        </g>
+      ))}
+
+      {/* Top header */}
+      <rect x="61" y="0" width="219" height="28" fill="#161b22" />
+      <rect x="61" y="28" width="219" height="1" fill="#30363d" />
+      <rect x="70" y="8" width="50" height="12" rx="3" fill="#0d1117" />
+      <rect x="230" y="9" width="44" height="10" rx="4" fill="#1c2333" stroke="#30363d" strokeWidth="0.5" />
+
+      {/* Stats row */}
+      {[0, 1, 2, 3].map((i) => {
+        const colors = ['#3b82f6', '#f85149', '#d29922', '#58a6ff'];
+        const labels = [68, 4, 2, 8];
+        const x = 70 + i * 52;
+        return (
+          <g key={i}>
+            <rect x={x} y="36" width="44" height="24" rx="4" fill="#161b22" stroke="#30363d" strokeWidth="0.5" />
+            <rect x={x + 4} y="41" width="6" height="6" rx="3" fill={colors[i]} />
+            <rect x={x + 12} y="41" width={labels[i]} height="4" rx="2" fill={colors[i]} opacity="0.7" />
+            <rect x={x + 12} y="48" width="20" height="3" rx="2" fill="#6e7681" />
+          </g>
+        );
+      })}
+
+      {/* Monitor cards */}
+      {[0, 1, 2].map((i) => {
+        const statusColors = ['#3b82f6', '#f85149', '#3b82f6'];
+        const x = 70 + i * 69;
+        return (
+          <g key={i}>
+            <rect x={x} y="68" width="62" height="50" rx="4" fill="#161b22" stroke="#30363d" strokeWidth="0.5" />
+            {/* status left border */}
+            <rect x={x} y="68" width="2.5" height="50" rx="2" fill={statusColors[i]} />
+            {/* status dot */}
+            <rect x={x + 7} y="76" width="6" height="6" rx="3" fill={statusColors[i]} />
+            {/* name */}
+            <rect x={x + 17} y="77" width={i === 1 ? 30 : 35} height="4" rx="2" fill="#e6edf3" />
+            {/* host */}
+            <rect x={x + 17} y="84" width="25" height="3" rx="2" fill="#6e7681" />
+            {/* sparkline */}
+            {i === 1 ? (
+              <polyline
+                points={`${x+7},102 ${x+12},106 ${x+17},100 ${x+22},108 ${x+27},103 ${x+32},109 ${x+37},104 ${x+42},107 ${x+47},103 ${x+52},108 ${x+57},105`}
+                fill="none" stroke="#f85149" strokeWidth="1.2" opacity="0.8"
+              />
+            ) : (
+              <polyline
+                points={`${x+7},104 ${x+12},101 ${x+17},103 ${x+22},99 ${x+27},101 ${x+32},98 ${x+37},100 ${x+42},97 ${x+47},99 ${x+52},96 ${x+57},98`}
+                fill="none" stroke="#3b82f6" strokeWidth="1.2" opacity="0.8"
+              />
+            )}
+            {/* response time */}
+            <rect x={x + 7} y="110" width="18" height="3" rx="2" fill="#8b949e" />
+            {/* uptime */}
+            <rect x={x + 40} y="110" width="15" height="3" rx="2" fill={statusColors[i]} opacity="0.8" />
+          </g>
+        );
+      })}
+
+      {/* Agent card */}
+      <rect x="70" y="126" width="200" height="36" rx="4" fill="#161b22" stroke="#30363d" strokeWidth="0.5" />
+      <rect x="78" y="132" width="5" height="5" rx="2.5" fill="#3b82f6" />
+      <rect x="87" y="133" width="35" height="4" rx="2" fill="#e6edf3" />
+      {/* CPU bar */}
+      <rect x="78" y="143" width="90" height="3" rx="2" fill="#1c2333" />
+      <rect x="78" y="143" width="55" height="3" rx="2" fill="#58a6ff" opacity="0.85" />
+      {/* RAM bar */}
+      <rect x="175" y="143" width="88" height="3" rx="2" fill="#1c2333" />
+      <rect x="175" y="143" width="40" height="3" rx="2" fill="#a371f7" opacity="0.85" />
+    </svg>
+  );
+}
+
+function NeonPreviewSvg() {
+  return (
+    <svg viewBox="0 0 280 170" xmlns="http://www.w3.org/2000/svg" className="w-full rounded-md">
+      <defs>
+        {/* Neon glow filters */}
+        <filter id="glow-cyan" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="2.5" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+        <filter id="glow-blue" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="2" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+        <filter id="glow-red" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="2" result="blur" />
+          <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
+        </filter>
+      </defs>
+
+      {/* Page background — near-black with blue tint */}
+      <rect width="280" height="170" fill="#070a0f" rx="6" />
+
+      {/* Sidebar */}
+      <rect x="0" y="0" width="60" height="170" fill="#0d1117" rx="6" />
+      <rect x="60" y="0" width="1" height="170" fill="#1c2a3f" />
+      {/* Sidebar logo — neon cyan */}
+      <rect x="10" y="12" width="16" height="16" rx="3" fill="#00c8ff" opacity="0.85" filter="url(#glow-cyan)" />
+      <rect x="31" y="15" width="22" height="5" rx="2" fill="#7899b8" />
+      {/* Sidebar nav items */}
+      {[40, 62, 84, 106].map((y, i) => (
+        <g key={y}>
+          <rect x="7" y={y} width="46" height="16" rx="3"
+            fill={i === 0 ? '#1a1f2e' : 'transparent'} />
+          <rect x="13" y={y + 4} width="8" height="8" rx="2"
+            fill={i === 0 ? '#00c8ff' : '#4a6a88'}
+            filter={i === 0 ? 'url(#glow-cyan)' : undefined} />
+          <rect x="25" y={y + 6} width={i === 0 ? 22 : 18} height="4" rx="2"
+            fill={i === 0 ? '#e0f0ff' : '#4a6a88'} />
+        </g>
+      ))}
+
+      {/* Top header */}
+      <rect x="61" y="0" width="219" height="28" fill="#0d1117" />
+      <rect x="61" y="28" width="219" height="1" fill="#1c2a3f" />
+      <rect x="70" y="8" width="50" height="12" rx="3" fill="#070a0f" />
+      <rect x="230" y="9" width="44" height="10" rx="4" fill="#111827" stroke="#1c2a3f" strokeWidth="0.5" />
+
+      {/* Stats row */}
+      {[0, 1, 2, 3].map((i) => {
+        const colors = ['#00a0ff', '#ff3860', '#ffaa00', '#00c8ff'];
+        const filters = ['url(#glow-blue)', 'url(#glow-red)', undefined, 'url(#glow-cyan)'];
+        const labels = [68, 4, 2, 8];
+        const x = 70 + i * 52;
+        return (
+          <g key={i}>
+            <rect x={x} y="36" width="44" height="24" rx="4" fill="#0d1117" stroke="#1c2a3f" strokeWidth="0.5" />
+            <rect x={x + 4} y="41" width="6" height="6" rx="3" fill={colors[i]} filter={filters[i]} />
+            <rect x={x + 12} y="41" width={labels[i]} height="4" rx="2" fill={colors[i]} opacity="0.75" />
+            <rect x={x + 12} y="48" width="20" height="3" rx="2" fill="#4a6a88" />
+          </g>
+        );
+      })}
+
+      {/* Monitor cards */}
+      {[0, 1, 2].map((i) => {
+        const statusColors = ['#00a0ff', '#ff3860', '#00a0ff'];
+        const statusFilters = ['url(#glow-blue)', 'url(#glow-red)', 'url(#glow-blue)'];
+        const x = 70 + i * 69;
+        return (
+          <g key={i}>
+            <rect x={x} y="68" width="62" height="50" rx="4" fill="#0d1117" stroke="#1c2a3f" strokeWidth="0.5" />
+            {/* status left border with glow */}
+            <rect x={x} y="68" width="2.5" height="50" rx="2" fill={statusColors[i]} filter={statusFilters[i]} />
+            {/* status dot */}
+            <rect x={x + 7} y="76" width="6" height="6" rx="3" fill={statusColors[i]} filter={statusFilters[i]} />
+            {/* name */}
+            <rect x={x + 17} y="77" width={i === 1 ? 30 : 35} height="4" rx="2" fill="#e0f0ff" />
+            {/* host */}
+            <rect x={x + 17} y="84" width="25" height="3" rx="2" fill="#4a6a88" />
+            {/* sparkline */}
+            {i === 1 ? (
+              <polyline
+                points={`${x+7},102 ${x+12},106 ${x+17},100 ${x+22},108 ${x+27},103 ${x+32},109 ${x+37},104 ${x+42},107 ${x+47},103 ${x+52},108 ${x+57},105`}
+                fill="none" stroke="#ff3860" strokeWidth="1.3" opacity="0.9"
+                filter="url(#glow-red)"
+              />
+            ) : (
+              <polyline
+                points={`${x+7},104 ${x+12},101 ${x+17},103 ${x+22},99 ${x+27},101 ${x+32},98 ${x+37},100 ${x+42},97 ${x+47},99 ${x+52},96 ${x+57},98`}
+                fill="none" stroke="#00a0ff" strokeWidth="1.3" opacity="0.9"
+                filter="url(#glow-blue)"
+              />
+            )}
+            {/* response time */}
+            <rect x={x + 7} y="110" width="18" height="3" rx="2" fill="#7899b8" />
+            {/* uptime */}
+            <rect x={x + 40} y="110" width="15" height="3" rx="2" fill={statusColors[i]} opacity="0.8" />
+          </g>
+        );
+      })}
+
+      {/* Agent card */}
+      <rect x="70" y="126" width="200" height="36" rx="4" fill="#0d1117" stroke="#1c2a3f" strokeWidth="0.5" />
+      <rect x="78" y="132" width="5" height="5" rx="2.5" fill="#00a0ff" filter="url(#glow-blue)" />
+      <rect x="87" y="133" width="35" height="4" rx="2" fill="#e0f0ff" />
+      {/* CPU bar */}
+      <rect x="78" y="143" width="90" height="3" rx="2" fill="#111827" />
+      <rect x="78" y="143" width="55" height="3" rx="2" fill="#00c8ff" opacity="0.9" filter="url(#glow-cyan)" />
+      {/* RAM bar */}
+      <rect x="175" y="143" width="88" height="3" rx="2" fill="#111827" />
+      <rect x="175" y="143" width="40" height="3" rx="2" fill="#b06aff" opacity="0.9" />
+    </svg>
+  );
+}
+
+/* ─── Obli Operator preview ────────────────────────────────────────────────── */
+
+function OperatorPreviewSvg() {
+  return (
+    <svg viewBox="0 0 280 170" xmlns="http://www.w3.org/2000/svg" className="w-full rounded-md">
+      {/* Page background */}
+      <rect width="280" height="170" fill="#0b0d1a" rx="6" />
+
+      {/* Topbar 52 px scaled */}
+      <rect x="0" y="0" width="280" height="14" fill="#0f1220" />
+      {/* Logo block */}
+      <rect x="6" y="3" width="8" height="8" rx="2" fill="#2bc4bd" />
+      <rect x="17" y="5" width="22" height="4" rx="1.5" fill="#e8ecf5" />
+      {/* Tenant pill */}
+      <rect x="46" y="3.5" width="36" height="7" rx="2" fill="rgba(255,255,255,0.04)" />
+      {/* App switcher pills — current (Obliview) glowing */}
+      <rect x="86"  y="3.5" width="34" height="7" rx="2" fill="rgba(43,196,189,0.18)" />
+      <circle cx="91" cy="7" r="1.5" fill="#2bc4bd" opacity="1" />
+      <rect x="124" y="3.5" width="20" height="7" rx="2" fill="transparent" />
+      <circle cx="129" cy="7" r="1.5" fill="#f5a623" />
+      <rect x="148" y="3.5" width="20" height="7" rx="2" fill="transparent" />
+      <circle cx="153" cy="7" r="1.5" fill="#1edd8a" />
+      {/* User badge */}
+      <rect x="244" y="3.5" width="32" height="7" rx="3.5" fill="rgba(255,255,255,0.04)" />
+      <circle cx="248" cy="7" r="2.5" fill="url(#opAvGrad)" />
+      <defs>
+        <linearGradient id="opAvGrad" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%"   stopColor="#2bc4bd" stopOpacity="0.7" />
+          <stop offset="100%" stopColor="#5fd9d3" stopOpacity="0.4" />
+        </linearGradient>
+      </defs>
+
+      {/* Sidebar 64 px scaled (collapsed showcase) */}
+      <rect x="0" y="14" width="42" height="156" fill="#0f1220" />
+      <rect x="9"  y="20" width="24" height="10" rx="2" fill="rgba(43,196,189,0.18)" />
+      <rect x="14" y="23" width="14" height="4"  rx="1" fill="#5fd9d3" />
+      {[40, 56, 72, 88].map((y, i) => (
+        <g key={y}>
+          <rect x="9" y={y} width="24" height="10" rx="2" fill={i === 0 ? 'rgba(43,196,189,0.12)' : 'transparent'} />
+          <rect x="14" y={y + 3} width="14" height="4" rx="1" fill={i === 0 ? '#5fd9d3' : '#4b5273'} />
+        </g>
+      ))}
+
+      {/* Hero KPI row — 5 cards, first featured */}
+      <rect x="50" y="22" width="74" height="28" rx="3.5" fill="#131728"
+            style={{ filter: 'url(#opGlow)' }} />
+      <rect x="50" y="22" width="74" height="28" rx="3.5"
+            fill="rgba(43,196,189,0.10)" />
+      <rect x="55" y="26" width="22" height="2.5" rx="1" fill="rgba(95,217,211,0.7)" />
+      <rect x="55" y="32" width="34" height="7"  rx="1" fill="#e8ecf5" />
+      <polyline
+        points="55,46 62,44 69,45 76,42 83,43 90,40 97,41 104,38 111,39 118,37"
+        fill="none" stroke="#5fd9d3" strokeWidth="0.8"
+      />
+      <defs>
+        <filter id="opGlow"><feGaussianBlur stdDeviation="0.6" /></filter>
+      </defs>
+
+      {[128, 166, 204, 242].map((x, i) => (
+        <g key={x}>
+          <rect x={x} y="22" width="34" height="28" rx="3.5" fill="#131728" />
+          <rect x={x + 4} y="26" width="20" height="2.5" rx="1" fill="#8c93b6" />
+          <rect x={x + 4} y="32" width="14" height="6" rx="1" fill={['#1edd8a', '#5fd9d3', '#f5a623', '#8c93b6'][i]} />
+          <rect x={x + 4} y="42" width="26" height="1.5" rx="0.5" fill="rgba(255,255,255,0.06)" />
+        </g>
+      ))}
+
+      {/* Chart + Donut row */}
+      <rect x="50" y="56" width="148" height="58" rx="3.5" fill="#131728" />
+      <polygon
+        points="56,108 56,90 70,84 84,86 98,80 112,82 126,76 140,78 154,72 168,74 182,68 196,70 196,108"
+        fill="rgba(95,217,211,0.18)"
+      />
+      <polyline
+        points="56,90 70,84 84,86 98,80 112,82 126,76 140,78 154,72 168,74 182,68 196,70"
+        fill="none" stroke="#5fd9d3" strokeWidth="1"
+      />
+
+      <rect x="202" y="56" width="74" height="58" rx="3.5" fill="#131728" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="4" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke="#2bc4bd"      strokeWidth="4" strokeDasharray="35 53" transform="rotate(-90 220 85)" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke="#1edd8a"      strokeWidth="4" strokeDasharray="20 68" strokeDashoffset="-35" transform="rotate(-90 220 85)" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke="#f5a623"      strokeWidth="4" strokeDasharray="12 76" strokeDashoffset="-55" transform="rotate(-90 220 85)" />
+      <rect x="240" y="74" width="32" height="2.5" rx="1" fill="#8c93b6" />
+      <rect x="240" y="80" width="28" height="2.5" rx="1" fill="#8c93b6" opacity="0.8" />
+      <rect x="240" y="86" width="24" height="2.5" rx="1" fill="#8c93b6" opacity="0.6" />
+
+      {/* Bottom status cards */}
+      {[50, 108, 166, 224].map((x, i) => (
+        <g key={x}>
+          <rect x={x} y="120" width="50" height="42" rx="3" fill="#131728" />
+          <rect x={x + 4} y="125" width="9" height="9" rx="2" fill={['rgba(224,58,58,0.18)', 'rgba(30,221,138,0.18)', 'rgba(245,166,35,0.18)', 'rgba(79,123,255,0.18)'][i]} />
+          <rect x={x + 4} y="138" width="20" height="2" rx="0.5" fill="#8c93b6" />
+          <rect x={x + 4} y="144" width="34" height="3" rx="0.5" fill="#e8ecf5" />
+          <rect x={x + 4} y="151" width="24" height="2" rx="0.5" fill="#4b5273" />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/* ─── Obli Daylight preview ────────────────────────────────────────────────── */
+
+function DaylightPreviewSvg() {
+  // Nordic Mist palette + Obliview teal accent (identical to Operator).
+  const bg    = '#e5e9f0';   // Snow Storm — page bg
+  const card  = '#eceff4';   // cards
+  const tert  = '#d8dee9';   // input / pill container
+  const text  = '#2e3440';   // Polar Night
+  const text2 = '#4c566a';
+  const muted = '#818da1';
+  const teal  = '#2bc4bd';   // Obliview accent
+  const teal2 = '#5fd9d3';
+  return (
+    <svg viewBox="0 0 280 170" xmlns="http://www.w3.org/2000/svg" className="w-full rounded-md">
+      {/* Page background — Snow Storm */}
+      <rect width="280" height="170" fill={bg} rx="6" />
+
+      {/* Topbar */}
+      <rect x="0" y="0" width="280" height="14" fill={card} />
+      <rect x="6" y="3" width="8" height="8" rx="2" fill={teal} />
+      <rect x="17" y="5" width="22" height="4" rx="1.5" fill={text} />
+      <rect x="46" y="3.5" width="36" height="7" rx="2" fill={tert} />
+      {/* App switcher — container-pill design (same as Obligate) */}
+      <rect x="84" y="2.5" width="86" height="9" rx="2" fill={tert} />
+      <rect x="86"  y="3.5" width="30" height="7" rx="1.5" fill={card} />
+      <circle cx="91" cy="7" r="1.5" fill={teal} />
+      <rect x="118" y="3.5" width="24" height="7" rx="1.5" fill="transparent" />
+      <circle cx="123" cy="7" r="1.5" fill="#d97706" />
+      <rect x="144" y="3.5" width="24" height="7" rx="1.5" fill="transparent" />
+      <circle cx="149" cy="7" r="1.5" fill="#16a34a" />
+      {/* User pill top-right */}
+      <rect x="240" y="3" width="36" height="8" rx="2" fill={tert} />
+      <circle cx="245" cy="7" r="2.5" fill={teal} opacity="0.7" />
+
+      {/* Sidebar */}
+      <rect x="0" y="14" width="42" height="156" fill={card} />
+      <rect x="9"  y="20" width="24" height="10" rx="2" fill={teal2} opacity="0.35" />
+      <rect x="14" y="23" width="14" height="4"  rx="1" fill={teal} />
+      {[40, 56, 72, 88].map((y, i) => (
+        <g key={y}>
+          <rect x="9" y={y} width="24" height="10" rx="2" fill={i === 0 ? tert : 'transparent'} />
+          <rect x="14" y={y + 3} width="14" height="4" rx="1" fill={i === 0 ? teal : muted} />
+        </g>
+      ))}
+
+      {/* Hero KPI row */}
+      <rect x="50" y="22" width="74" height="28" rx="3.5" fill={card} />
+      <rect x="50" y="22" width="74" height="28" rx="3.5" fill={teal} opacity="0.08" />
+      <rect x="55" y="26" width="22" height="2.5" rx="1" fill={teal} opacity="0.75" />
+      <rect x="55" y="32" width="34" height="7"  rx="1" fill={text} />
+      <polyline
+        points="55,46 62,44 69,45 76,42 83,43 90,40 97,41 104,38 111,39 118,37"
+        fill="none" stroke={teal} strokeWidth="0.8"
+      />
+
+      {[128, 166, 204, 242].map((x, i) => (
+        <g key={x}>
+          <rect x={x} y="22" width="34" height="28" rx="3.5" fill={card} />
+          <rect x={x + 4} y="26" width="20" height="2.5" rx="1" fill={text2} />
+          <rect x={x + 4} y="32" width="14" height="6" rx="1" fill={['#10a360', teal, '#d97706', muted][i]} />
+          <rect x={x + 4} y="42" width="26" height="1.5" rx="0.5" fill={tert} />
+        </g>
+      ))}
+
+      {/* Chart + Donut row */}
+      <rect x="50" y="56" width="148" height="58" rx="3.5" fill={card} />
+      <polygon
+        points="56,108 56,90 70,84 84,86 98,80 112,82 126,76 140,78 154,72 168,74 182,68 196,70 196,108"
+        fill={teal} opacity="0.18"
+      />
+      <polyline
+        points="56,90 70,84 84,86 98,80 112,82 126,76 140,78 154,72 168,74 182,68 196,70"
+        fill="none" stroke={teal} strokeWidth="1"
+      />
+
+      <rect x="202" y="56" width="74" height="58" rx="3.5" fill={card} />
+      <circle cx="220" cy="85" r="14" fill="none" stroke={tert} strokeWidth="4" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke={teal}     strokeWidth="4" strokeDasharray="35 53" transform="rotate(-90 220 85)" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke="#10a360"  strokeWidth="4" strokeDasharray="20 68" strokeDashoffset="-35" transform="rotate(-90 220 85)" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke="#d97706"  strokeWidth="4" strokeDasharray="12 76" strokeDashoffset="-55" transform="rotate(-90 220 85)" />
+      <rect x="240" y="74" width="32" height="2.5" rx="1" fill={text2} />
+      <rect x="240" y="80" width="28" height="2.5" rx="1" fill={text2} opacity="0.8" />
+      <rect x="240" y="86" width="24" height="2.5" rx="1" fill={text2} opacity="0.6" />
+
+      {/* Bottom status cards */}
+      {[50, 108, 166, 224].map((x, i) => (
+        <g key={x}>
+          <rect x={x} y="120" width="50" height="42" rx="3" fill={card} />
+          <rect x={x + 4} y="125" width="9" height="9" rx="2" fill={['rgba(220,38,38,0.15)', 'rgba(16,163,96,0.15)', 'rgba(217,119,6,0.15)', 'rgba(37,99,235,0.15)'][i]} />
+          <rect x={x + 4} y="138" width="20" height="2" rx="0.5" fill={muted} />
+          <rect x={x + 4} y="144" width="34" height="3" rx="0.5" fill={text} />
+          <rect x={x + 4} y="151" width="24" height="2" rx="0.5" fill={muted} />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/* ─── Obli Dim preview ─────────────────────────────────────────────────────── */
+
+function DimPreviewSvg() {
+  // Nord "Polar Night" neutrals — dark companion of Obli Daylight. The accent
+  // is Obliview's own teal, identical to Operator: Dim changes neutrals only.
+  const bg      = '#2e3440';   // page
+  const chrome  = '#282d37';   // topbar + sidebar (one step darker than page)
+  const card    = '#3b4252';   // cards / surfaces
+  const raised  = '#434c5e';   // inputs / pill containers / hover
+  const active  = '#4a5468';   // selected nav item
+  const text    = '#eceff4';
+  const text2   = '#d8dee9';
+  const muted   = '#a3abbc';
+  const up      = '#6ccb8f';
+  const warn    = '#ebcb8b';
+  const down    = '#ff6b6b';
+  const info    = '#88a6e0';
+  const accent  = '#2bc4bd';   // Obliview accent (Operator --c-accent)
+  const accent2 = '#5fd9d3';   // Obliview accent hover (Operator --c-accent-hover)
+  return (
+    <svg viewBox="0 0 280 170" xmlns="http://www.w3.org/2000/svg" className="w-full rounded-md">
+      {/* Page background — Polar Night */}
+      <rect width="280" height="170" fill={bg} rx="6" />
+
+      {/* Topbar */}
+      <rect x="0" y="0" width="280" height="14" fill={chrome} />
+      <rect x="6" y="3" width="8" height="8" rx="2" fill={accent} />
+      <rect x="17" y="5" width="22" height="4" rx="1.5" fill={text} />
+      <rect x="46" y="3.5" width="36" height="7" rx="2" fill={raised} />
+      {/* App switcher — container-pill, current app = card pill + accent dot */}
+      <rect x="84" y="2.5" width="86" height="9" rx="2" fill={raised} />
+      <rect x="86"  y="3.5" width="30" height="7" rx="1.5" fill={card} />
+      <circle cx="91" cy="7" r="1.5" fill={accent} />
+      <circle cx="123" cy="7" r="1.5" fill="#f5a623" />
+      <circle cx="149" cy="7" r="1.5" fill="#1edd8a" />
+      {/* User pill top-right */}
+      <rect x="240" y="3" width="36" height="8" rx="2" fill={raised} />
+      <circle cx="245" cy="7" r="2.5" fill={accent} opacity="0.7" />
+
+      {/* Sidebar */}
+      <rect x="0" y="14" width="42" height="156" fill={chrome} />
+      <rect x="9"  y="20" width="24" height="10" rx="2" fill={accent} opacity="0.18" />
+      <rect x="14" y="23" width="14" height="4"  rx="1" fill={accent2} />
+      {[40, 56, 72, 88].map((y, i) => (
+        <g key={y}>
+          <rect x="9" y={y} width="24" height="10" rx="2" fill={i === 0 ? active : 'transparent'} />
+          <rect x="14" y={y + 3} width="14" height="4" rx="1" fill={i === 0 ? accent2 : muted} />
+        </g>
+      ))}
+
+      {/* Hero KPI row */}
+      <rect x="50" y="22" width="74" height="28" rx="3.5" fill={card} />
+      <rect x="50" y="22" width="74" height="28" rx="3.5" fill={accent} opacity="0.10" />
+      <rect x="55" y="26" width="22" height="2.5" rx="1" fill={accent2} opacity="0.8" />
+      <rect x="55" y="32" width="34" height="7"  rx="1" fill={text} />
+      <polyline
+        points="55,46 62,44 69,45 76,42 83,43 90,40 97,41 104,38 111,39 118,37"
+        fill="none" stroke={accent2} strokeWidth="0.8"
+      />
+
+      {[128, 166, 204, 242].map((x, i) => (
+        <g key={x}>
+          <rect x={x} y="22" width="34" height="28" rx="3.5" fill={card} />
+          <rect x={x + 4} y="26" width="20" height="2.5" rx="1" fill={text2} />
+          <rect x={x + 4} y="32" width="14" height="6" rx="1" fill={[up, accent, warn, muted][i]} />
+          <rect x={x + 4} y="42" width="26" height="1.5" rx="0.5" fill={raised} />
+        </g>
+      ))}
+
+      {/* Chart + Donut row */}
+      <rect x="50" y="56" width="148" height="58" rx="3.5" fill={card} />
+      <polygon
+        points="56,108 56,90 70,84 84,86 98,80 112,82 126,76 140,78 154,72 168,74 182,68 196,70 196,108"
+        fill={accent} opacity="0.18"
+      />
+      <polyline
+        points="56,90 70,84 84,86 98,80 112,82 126,76 140,78 154,72 168,74 182,68 196,70"
+        fill="none" stroke={accent2} strokeWidth="1"
+      />
+
+      <rect x="202" y="56" width="74" height="58" rx="3.5" fill={card} />
+      <circle cx="220" cy="85" r="14" fill="none" stroke={raised} strokeWidth="4" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke={accent} strokeWidth="4" strokeDasharray="35 53" transform="rotate(-90 220 85)" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke={up}     strokeWidth="4" strokeDasharray="20 68" strokeDashoffset="-35" transform="rotate(-90 220 85)" />
+      <circle cx="220" cy="85" r="14" fill="none" stroke={warn}   strokeWidth="4" strokeDasharray="12 76" strokeDashoffset="-55" transform="rotate(-90 220 85)" />
+      <rect x="240" y="74" width="32" height="2.5" rx="1" fill={text2} />
+      <rect x="240" y="80" width="28" height="2.5" rx="1" fill={text2} opacity="0.8" />
+      <rect x="240" y="86" width="24" height="2.5" rx="1" fill={text2} opacity="0.6" />
+
+      {/* Bottom status cards — down / up / warning / info tints */}
+      {[50, 108, 166, 224].map((x, i) => (
+        <g key={x}>
+          <rect x={x} y="120" width="50" height="42" rx="3" fill={card} />
+          <rect x={x + 4} y="125" width="9" height="9" rx="2" fill={[down, up, warn, info][i]} opacity="0.22" />
+          <rect x={x + 4} y="138" width="20" height="2" rx="0.5" fill={muted} />
+          <rect x={x + 4} y="144" width="34" height="3" rx="0.5" fill={text} />
+          <rect x={x + 4} y="151" width="24" height="2" rx="0.5" fill={muted} opacity="0.7" />
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+/* ─── ThemePicker ──────────────────────────────────────────────────────────── */
+
+// Order: the three Obli themes first, Dim right after its light companion
+// Daylight (Operator · Daylight · Dim share the first row on wide screens).
+const THEMES: { id: AppTheme; label: string; Preview: () => JSX.Element }[] = [
+  { id: 'obli-operator', label: 'Obli Operator', Preview: OperatorPreviewSvg },
+  { id: 'obli-daylight', label: 'Obli Daylight', Preview: DaylightPreviewSvg },
+  { id: 'obli-dim',      label: 'Obli Dim',      Preview: DimPreviewSvg      },
+  { id: 'modern',        label: 'Modern UI',     Preview: ModernPreviewSvg   },
+  { id: 'neon',          label: 'Neon UI',       Preview: NeonPreviewSvg     },
+];
+
+export function ThemePicker({ value, onChange }: ThemePickerProps) {
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      {THEMES.map(({ id, label, Preview }) => {
+        const selected = value === id;
+        return (
+          <button
+            key={id}
+            type="button"
+            onClick={() => onChange(id)}
+            className={cn(
+              'group relative rounded-xl border-2 p-2 text-left transition-all',
+              selected
+                ? 'border-primary shadow-[0_0_0_1px_rgb(var(--c-primary)/0.3)]'
+                : 'border-border hover:border-primary/40 hover:bg-bg-hover',
+            )}
+          >
+            {/* Preview SVG */}
+            <div className={cn(
+              'overflow-hidden rounded-lg ring-0 transition-all',
+              selected ? 'ring-2 ring-primary/30' : 'group-hover:ring-1 group-hover:ring-primary/20',
+            )}>
+              <Preview />
+            </div>
+
+            {/* Label + checkmark */}
+            <div className="mt-2.5 flex items-center justify-between px-1 pb-0.5">
+              <span className={cn(
+                'text-sm font-semibold',
+                selected ? 'text-primary' : 'text-text-secondary',
+              )}>
+                {label}
+              </span>
+              {selected && (
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary">
+                  <Check size={11} className="text-bg-primary" strokeWidth={3} />
+                </span>
+              )}
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}

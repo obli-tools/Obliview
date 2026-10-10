@@ -1,0 +1,87 @@
+import { Router, type Request, type Response } from 'express';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
+import os from 'os';
+import { chromium } from 'playwright-chromium';
+import { requireAuth } from '../middleware/auth';
+import { requirePlatformAdmin } from '../middleware/rbac';
+import { db } from '../db';
+import { asyncHandler } from '../utils/asyncHandler';
+
+const router = Router();
+
+// Browser monitors need a Chromium binary (Playwright's bundled build, or
+// CHROMIUM_PATH). Detected lazily on the first call, then cached for the
+// lifetime of the process (the image does not change at runtime).
+let browserAvailableCache: boolean | null = null;
+function isBrowserAvailable(): boolean {
+  if (browserAvailableCache !== null) return browserAvailableCache;
+  let available = false;
+  try {
+    const exe = process.env.CHROMIUM_PATH?.trim() || chromium.executablePath();
+    available = !!exe && existsSync(exe);
+  } catch {
+    available = false;
+  }
+  browserAvailableCache = available;
+  return available;
+}
+
+// GET /api/system — system info for the About section (platform admin only)
+router.get('/', requireAuth, requirePlatformAdmin(), asyncHandler(async (_req: Request, res: Response) => {
+  // App version from package.json (same logic as app.ts)
+  let appVersion = 'dev';
+  try {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf-8')) as { version: string };
+    appVersion = pkg.version;
+  } catch { /* ignore */ }
+
+  // Agent version from VERSION file (injected into Docker image at build time)
+  let agentVersion = 'unknown';
+  const agentVersionFile = join(process.cwd(), '..', 'agent', 'VERSION');
+  try {
+    if (existsSync(agentVersionFile)) {
+      agentVersion = readFileSync(agentVersionFile, 'utf-8').trim();
+    }
+  } catch { /* ignore */ }
+
+  // Memory
+  const mem = process.memoryUsage();
+  const processRssMb   = Math.round(mem.rss      / 1024 / 1024 * 10) / 10;
+  const processHeapMb  = Math.round(mem.heapUsed  / 1024 / 1024 * 10) / 10;
+  const systemTotalMb  = Math.round(os.totalmem() / 1024 / 1024);
+  const systemFreeMb   = Math.round(os.freemem()  / 1024 / 1024);
+
+  // CPU
+  const [load1, load5, load15] = os.loadavg();
+  const cores = os.cpus().length;
+
+  // Environment
+  const isDocker = existsSync('/.dockerenv');
+  const platform = os.platform();
+
+  // Database health
+  let dbStatus: 'ok' | 'error' = 'error';
+  try {
+    await db.raw('SELECT 1');
+    dbStatus = 'ok';
+  } catch { /* ignore */ }
+
+  res.json({
+    appVersion,
+    nodeVersion:   process.version,
+    agentVersion,
+    uptimeSeconds: Math.floor(process.uptime()),
+    memory: { processRssMb, processHeapMb, systemTotalMb, systemFreeMb },
+    cpu: {
+      loadAvg1:  Math.round(load1  * 100) / 100,
+      loadAvg5:  Math.round(load5  * 100) / 100,
+      loadAvg15: Math.round(load15 * 100) / 100,
+      cores,
+    },
+    environment: { isDocker, platform, dbStatus },
+    browserAvailable: isBrowserAvailable(),
+  });
+}));
+
+export default router;

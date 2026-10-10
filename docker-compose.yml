@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: obliview
+      POSTGRES_USER: obliview
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Expose on LAN so you can run migrations from your PC / pgAdmin.
+    # Remove this if you don't need external access.
+    #ports:
+    #  - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U obliview"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  server:
+    image: meejay/obliview-server:${OBLIVIEW_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DATABASE_URL: postgres://obliview:${DB_PASSWORD:-changeme}@postgres:5432/obliview
+      # Required: a random value of 32+ characters (see .env.example).
+      SESSION_SECRET: ${SESSION_SECRET}
+      # Optional: key of stored SSH remediation credentials (defaults to SESSION_SECRET).
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      # Optional, during a secret rotation: the previous values, so stored SSH
+      # credentials stay readable until they are re-encrypted (see .env.example).
+      SESSION_SECRET_PREVIOUS: ${SESSION_SECRET_PREVIOUS:-}
+      ENCRYPTION_KEY_PREVIOUS: ${ENCRYPTION_KEY_PREVIOUS:-}
+      # Optional: secret Obligate must present on its calls to this server.
+      OBLIGATE_INBOUND_SECRET: ${OBLIGATE_INBOUND_SECRET:-}
+      # Remediation actions executed on/from the server (script, ssh, docker_restart).
+      REMEDIATION_ALLOW_SERVER_SCRIPTS: ${REMEDIATION_ALLOW_SERVER_SCRIPTS:-true}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:-admin123}
+      FORCE_HTTPS: ${FORCE_HTTPS:-false}
+    volumes:
+      # Persistent custom directory: scripts, SSH keys, etc.
+      # SSH keys: chmod 700 custom/.ssh && chmod 600 custom/.ssh/id_*
+      - ${CUSTOM_DIR:-./custom}:/custom
+
+  client:
+    image: meejay/obliview-client:${OBLIVIEW_VERSION:-latest}
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "${LISTEN_PORT:-3000}:80"
+volumes:
+  postgres_data:

@@ -1,0 +1,16 @@
+node_modules
+**/node_modules
+**/dist
+!agent/dist
+!obli.tools/dist
+!obli.tools/VERSION
+.git
+.env
+*.md
+.vscode
+.*
+.cache
+# Local tooling scripts: never in a build context
+**/*.bat
+**/*.cmd
+.local

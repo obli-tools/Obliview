@@ -1,0 +1,22 @@
+{
+  "name": "@obliview/proxy",
+  "version": "1.0.7",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "playwright-chromium": "^1.49.0",
+    "gamedig": "^5.2.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13",
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

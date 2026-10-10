@@ -1,0 +1,821 @@
+import type { Server as SocketIOServer } from 'socket.io';
+import type { MonitorStatus } from '@obliview/shared';
+import { SOCKET_EVENTS } from '@obliview/shared';
+import { heartbeatService } from '../services/heartbeat.service';
+import { monitorService } from '../services/monitor.service';
+import { notificationService } from '../services/notification.service';
+import { remediationService } from '../services/remediation.service';
+import { groupService } from '../services/group.service';
+import { groupNotificationService } from '../services/groupNotification.service';
+import { permissionService } from '../services/permission.service';
+import { maintenanceService } from '../services/maintenance.service';
+import { liveAlertService, monitorIncidentKey } from '../services/liveAlert.service';
+import type { LiveAlertSeverity, MonitorIncidentCategory } from '../services/liveAlert.service';
+import { db } from '../db';
+import { logger } from '../utils/logger';
+
+export interface CheckResult {
+  status: MonitorStatus;
+  responseTime?: number;
+  statusCode?: number;
+  message?: string;
+  ping?: number;
+  value?: string;
+  /** Set to true for value watcher "changed" operator — triggers notification without changing status */
+  valueChanged?: boolean;
+  /** When true, suppress individual monitor notifications — the proxy agent is
+   *  down and a single "proxy offline" notification should be sent instead. */
+  suppressNotification?: boolean;
+  /**
+   * Override the status written to the heartbeat row, decoupling reachability
+   * tracking from the monitor's logical state. Used by AgentMonitorWorker so a
+   * threshold violation (CPU/RAM/temp) reports `status='alert'` for the badge
+   * + notifications but leaves the heartbeat row as `'up'` — the Uptime tab
+   * only cares whether the agent is reachable, not whether a metric is hot.
+   * Defaults to `status` when omitted ('ssl_warning' defaults to 'up': the
+   * target answered, only its certificate is close to expiry).
+   */
+  heartbeatStatus?: MonitorStatus;
+  /**
+   * Agent monitors only: the individual threshold violations behind an
+   * 'alert' status (same order as the push snapshot). When the alert is
+   * confirmed, one live alert is raised per entry, deduped by the stable key
+   * `agent-{deviceId}-{metricKey}`.
+   */
+  agentViolations?: { message: string; metricKey: string }[];
+}
+
+/** Statuses that represent a problem (notifications, remediation 'down' trigger, live alerts). */
+function isProblemStatus(s: string): boolean {
+  return s === 'down' || s === 'ssl_expired' || s === 'ssl_warning' || s === 'alert';
+}
+
+export interface MonitorConfig {
+  id: number;
+  name: string;
+  type: string;
+  groupId: number | null;
+  intervalSeconds: number;
+  retryIntervalSeconds: number;
+  maxRetries: number;
+  timeoutMs: number;
+  upsideDown: boolean;
+  /** Minimum seconds between repeated problem notifications (0 = disabled) */
+  notificationCooldownSeconds: number;
+  [key: string]: unknown;
+}
+
+export abstract class BaseMonitorWorker {
+  protected config: MonitorConfig;
+  protected io: SocketIOServer;
+  protected timer: ReturnType<typeof setTimeout> | null = null;
+  protected isRunning: boolean = false;
+  protected retryCount: number = 0;
+  protected previousStatus: MonitorStatus = 'pending';
+  /** The last status that was officially confirmed and notified (survives retries) */
+  protected confirmedStatus: MonitorStatus = 'pending';
+  /** Unix-ms timestamp of the last notification sent (for cooldown) */
+  protected lastNotifiedAt: number = 0;
+  /** The status that was last actually notified to the user */
+  protected lastNotifiedStatus: MonitorStatus = 'pending';
+  /** Unix-ms timestamp of the last confirmed status change (for debounce) */
+  protected lastStateChangeAt: number = 0;
+  /**
+   * Channel notification queued during cooldown (sent when state is stable for
+   * the cooldown duration). Only channel sends are debounced — remediations and
+   * live alerts run immediately on every confirmed transition.
+   */
+  protected pendingNotification: { status: MonitorStatus; message?: string } | null = null;
+  /** When true, the current check result requests notification suppression (proxy agent down). */
+  private _suppressNotification = false;
+  /** Tenant ID for scoped Socket.io room emissions (null until resolved) */
+  protected tenantId: number | null = null;
+  /**
+   * True only on the very first processResult() call after start().
+   * Combined with restoredFromDb, suppresses spurious notifications caused
+   * by in-memory state (push timestamps, agent snapshots) being lost on restart.
+   */
+  private isFirstBeat: boolean = true;
+  /**
+   * True when confirmedStatus was loaded from a non-pending DB row,
+   * i.e. this is an existing monitor being (re)started, not a brand-new one.
+   */
+  private restoredFromDb: boolean = false;
+
+  constructor(config: MonitorConfig, io: SocketIOServer) {
+    this.config = config;
+    this.io = io;
+  }
+
+  /** Resolve and cache the tenant_id for this monitor from the DB. */
+  protected async resolveTenantId(): Promise<number | null> {
+    if (this.tenantId !== null) return this.tenantId;
+    const row = await db('monitors')
+      .where({ id: this.config.id })
+      .select('tenant_id')
+      .first() as { tenant_id: number | null } | undefined;
+    this.tenantId = row?.tenant_id ?? null;
+    return this.tenantId;
+  }
+
+  async start(): Promise<void> {
+    this.isRunning = true;
+    logger.info(`Starting worker for monitor "${this.config.name}" (id: ${this.config.id})`);
+
+    // Restore previousStatus / confirmedStatus from the DB so a fresh start
+    // does not re-send notifications for problems that were already known before
+    // the server restarted (e.g. a monitor that was already DOWN).
+    try {
+      const row = await db('monitors')
+        .where({ id: this.config.id })
+        .select('status')
+        .first() as { status: MonitorStatus } | undefined;
+      if (row?.status && row.status !== 'pending') {
+        this.previousStatus  = row.status;
+        this.confirmedStatus = row.status;
+        // Flag that we have a real prior state — used to suppress the first beat's
+        // spurious notifications when in-memory data (push/agent) is not yet available.
+        this.restoredFromDb  = true;
+      }
+    } catch {
+      // Non-critical — fall through with defaults ('pending')
+    }
+
+    await this.beat();
+    this.scheduleNext();
+  }
+
+  stop(): void {
+    this.isRunning = false;
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    logger.info(`Stopped worker for monitor "${this.config.name}" (id: ${this.config.id})`);
+  }
+
+  updateConfig(config: MonitorConfig): void {
+    this.config = config;
+  }
+
+  private scheduleNext(): void {
+    if (!this.isRunning) return;
+
+    // Use shorter retry interval while in the retry window for both 'down' and 'alert'.
+    const isRetryableStatus = this.previousStatus === 'down' || this.previousStatus === 'alert';
+    const interval =
+      isRetryableStatus && this.retryCount <= this.config.maxRetries
+        ? this.config.retryIntervalSeconds
+        : this.config.intervalSeconds;
+
+    this.timer = setTimeout(async () => {
+      if (!this.isRunning) return;
+      await this.beat();
+      this.scheduleNext();
+    }, interval * 1000);
+  }
+
+  private async beat(): Promise<void> {
+    let result: CheckResult;
+
+    try {
+      if (this.config.proxyAgentDeviceId) {
+        result = this.performCheckViaProxy();
+      } else {
+        result = await this.performCheck();
+      }
+    } catch (error) {
+      result = {
+        status: 'down',
+        message: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+
+    // Apply upside-down logic (only for up/down, not SSL statuses)
+    if (this.config.upsideDown && (result.status === 'up' || result.status === 'down')) {
+      result.status = result.status === 'up' ? 'down' : 'up';
+    }
+
+    await this.processResult(result);
+  }
+
+  private async processResult(result: CheckResult): Promise<void> {
+    try {
+      // On the very first beat of a restarted existing monitor, suppress all
+      // handleStatusChange calls and confirmedStatus updates.  In-memory state
+      // (agent push snapshots, push-monitor timestamps) is empty right after
+      // server restart, so the first check may return a stale/incorrect status.
+      // We still update the DB status and emit the heartbeat — only notifications
+      // and live alerts are skipped until the second beat.
+      const isStartupBeat = this.isFirstBeat && this.restoredFromDb;
+
+      // Track suppression flag for the current beat — checked in handleStatusChange.
+      this._suppressNotification = result.suppressNotification ?? false;
+
+      // SSL statuses are deterministic (not transient) — no retries needed
+      const isSslStatus = result.status === 'ssl_warning' || result.status === 'ssl_expired';
+
+      // 'down' AND 'alert' both go through the retry mechanism:
+      //   • retryCount accumulates on consecutive failures
+      //   • notification fires only after retryCount > maxRetries (confirmed problem)
+      //   • this prevents spurious notifications on transient failures / brief threshold spikes
+      const isRetryableStatus = result.status === 'down' || result.status === 'alert';
+
+      if (isRetryableStatus) {
+        this.retryCount++;
+      }
+      const isRetrying = isRetryableStatus && this.retryCount <= this.config.maxRetries;
+
+      // 0. Check maintenance state (cached — 60s TTL)
+      const agentDeviceId = this.config.agentDeviceId as number | null | undefined;
+      const inMaintenance = agentDeviceId
+        ? await maintenanceService.isInMaintenance('agent', agentDeviceId, this.config.groupId)
+        : await maintenanceService.isInMaintenance('monitor', this.config.id, this.config.groupId);
+
+      // 1. Store heartbeat (with retry flag + maintenance tag)
+      //    heartbeatStatus overrides status for the row so reachability-only
+      //    timelines stay clean even when the monitor is in 'alert' state.
+      //    An SSL warning means the target answered and only its certificate
+      //    is close to expiry, so it is recorded as 'up' for uptime purposes
+      //    (covers every SSL-capable worker and proxy-run checks).
+      const heartbeat = await heartbeatService.create({
+        monitorId: this.config.id,
+        status: result.heartbeatStatus ?? (result.status === 'ssl_warning' ? 'up' : result.status),
+        responseTime: result.responseTime,
+        statusCode: result.statusCode,
+        message: result.message,
+        ping: result.ping,
+        isRetrying,
+        value: result.value,
+        inMaintenance,
+      });
+
+      // 1b. Value changed notification (value watcher "changed" operator)
+      //     Fires independently of status change logic — monitor stays UP.
+      //     Suppressed during maintenance, like every other notification.
+      if (result.valueChanged && !inMaintenance) {
+        try {
+          await notificationService.sendForMonitor(this.config.id, this.config.groupId, {
+            monitorName: this.config.name,
+            monitorUrl: this.config.url as string | undefined,
+            oldStatus: 'up',
+            newStatus: 'value_changed',
+            message: result.message,
+            timestamp: new Date().toISOString(),
+          });
+        } catch (error) {
+          logger.error(error, `Failed to send value-changed notification for monitor ${this.config.id}`);
+        }
+      }
+
+      // 2. State change logic — compare against confirmedStatus (not previousStatus)
+      //    confirmedStatus tracks the last "officially notified" state.
+      //    previousStatus tracks the raw last-check status (used for scheduleNext timing).
+
+      if (isRetryableStatus) {
+        if (this.retryCount > this.config.maxRetries) {
+          // Retries exhausted — confirmed problem (DOWN or ALERT)
+          if (this.confirmedStatus !== result.status && !isStartupBeat) {
+            await this.handleStatusChange(result.status, result.message, inMaintenance, result.agentViolations);
+            // Do NOT advance confirmedStatus while in maintenance.
+            // Keeping the pre-maintenance value ensures that once the window ends,
+            // confirmedStatus !== result.status is still true and a notification fires
+            // immediately on the next check — even if the monitor was already down
+            // throughout the entire maintenance period.
+            if (!inMaintenance) {
+              this.confirmedStatus = result.status;
+            }
+          }
+        }
+        // During retry period: do NOT update confirmedStatus — wait for the threshold to be met
+      } else if (isSslStatus) {
+        // SSL statuses fire immediately with no retries
+        this.retryCount = 0;
+        if (this.confirmedStatus !== result.status && !isStartupBeat) {
+          await this.handleStatusChange(result.status, result.message, inMaintenance);
+          if (!inMaintenance) {
+            this.confirmedStatus = result.status;
+          }
+        }
+      } else {
+        // Status is UP (or 'inactive') — always update confirmedStatus, even during maintenance.
+        // If a down monitor recovers during a maintenance window we want to track that transition
+        // so that a subsequent drop after maintenance correctly fires a notification.
+        if (this.confirmedStatus !== result.status && this.confirmedStatus !== 'pending' && !isStartupBeat) {
+          await this.handleStatusChange(result.status, result.message, inMaintenance, result.agentViolations);
+        }
+        if (!isStartupBeat) {
+          this.confirmedStatus = result.status;
+        }
+        this.retryCount = 0;
+      }
+
+      this.previousStatus = result.status;
+      this.isFirstBeat = false;
+
+      // 2b. Flush pending debounced notification if state has been stable long enough
+      await this.flushPendingNotification();
+
+      // 3. Update monitor status in DB
+      // For agent monitors on the startup beat, skip writing 'down' to the DB.
+      // agentPushData is empty right after restart, so the first worker check
+      // always returns 'down' even if the agent was 'alert' or 'up' before restart.
+      // Overwriting the DB here would corrupt the fallback used by agent.service.ts
+      // to detect transitions on the agent's first push after restart, causing a
+      // false up→alert notification.  The DB will be updated correctly on the next
+      // beat once the agent has pushed its real data.
+      const isAgentStartupDown =
+        isStartupBeat &&
+        !!this.config.agentDeviceId &&
+        result.status === 'down';
+      if (!isAgentStartupDown) {
+        await monitorService.updateStatus(this.config.id, result.status);
+      }
+
+      // 4. Broadcast heartbeat via Socket.io (visibility-filtered).
+      //    `monitorStatus` carries the logical status just persisted, which can
+      //    differ from heartbeat.status ('alert' / 'ssl_warning' rows are
+      //    stored as 'up'), so clients can keep the badge right.
+      await this.emitToVisibleUsers(SOCKET_EVENTS.MONITOR_HEARTBEAT, {
+        monitorId: this.config.id,
+        heartbeat,
+        ...(isAgentStartupDown ? {} : { monitorStatus: result.status }),
+      });
+    } catch (error) {
+      // FK violation (23503): the monitor was deleted while the worker was still running.
+      // Stop the worker gracefully instead of spamming the logs on every tick.
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        (error as { code: string }).code === '23503'
+      ) {
+        logger.warn(
+          `Monitor "${this.config.name}" (id: ${this.config.id}) no longer exists in DB — stopping worker gracefully`,
+        );
+        this.stop();
+        return;
+      }
+      logger.error(
+        error,
+        `Error processing result for monitor "${this.config.name}" (id: ${this.config.id})`,
+      );
+    }
+  }
+
+  /**
+   * Check if a debounced channel notification is ready to fire.
+   * Called on every beat — sends the pending notification only when the state
+   * has been stable (no handleStatusChange calls) for the full cooldown period.
+   */
+  private async flushPendingNotification(): Promise<void> {
+    if (!this.pendingNotification) return;
+    const cooldownMs = (this.config.notificationCooldownSeconds ?? 0) * 1000;
+    if (cooldownMs <= 0) return;
+    const elapsed = Date.now() - this.lastStateChangeAt;
+    if (elapsed < cooldownMs) return; // still in debounce window
+
+    // State has been stable for the full cooldown — send the queued notification
+    const pending = this.pendingNotification;
+    this.pendingNotification = null;
+
+    // Skip if the pending status is the same as what we last notified
+    if (pending.status === this.lastNotifiedStatus) {
+      logger.info(
+        `Monitor "${this.config.name}" (id: ${this.config.id}): ` +
+        `pending notification discarded — status unchanged (${pending.status})`,
+      );
+      return;
+    }
+
+    // The transition the user sees is "last notified status → current status".
+    // confirmedStatus already equals pending.status here, so it cannot serve as
+    // the old status (group recovery relies on oldStatus being a problem).
+    const previousNotifiedStatus = this.lastNotifiedStatus;
+    logger.info(
+      `Monitor "${this.config.name}" (id: ${this.config.id}): ` +
+      `flushing debounced notification: ${previousNotifiedStatus} → ${pending.status} (stable for ${Math.round(elapsed / 1000)}s)`,
+    );
+    this.lastNotifiedAt = Date.now();
+    this.lastNotifiedStatus = pending.status;
+    await this.dispatchChannelNotification(previousNotifiedStatus, pending.status, pending.message);
+  }
+
+  private async handleStatusChange(
+    newStatus: MonitorStatus,
+    message?: string,
+    inMaintenance?: boolean,
+    agentViolations?: CheckResult['agentViolations'],
+  ): Promise<void> {
+    const oldStatus = this.confirmedStatus;
+    logger.info(
+      `Monitor "${this.config.name}" (id: ${this.config.id}): ${oldStatus} → ${newStatus}`,
+    );
+
+    // Emit status change event (visibility-filtered)
+    await this.emitToVisibleUsers(SOCKET_EVENTS.MONITOR_STATUS_CHANGE, {
+      monitorId: this.config.id,
+      oldStatus,
+      newStatus,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Live alert incidents end with the problem, whatever happens next
+    // (maintenance, proxy suppression, inactive agent): resolve them before
+    // any early return so no stale active alert is left behind.
+    await this.resolveLiveAlerts(newStatus);
+
+    // 'inactive' status = agent offline with heartbeat_monitoring disabled → no notification
+    if (newStatus === 'inactive') {
+      return;
+    }
+
+    // 'inactive' → 'up': the agent came back online after being off, but heartbeat monitoring
+    // was disabled — the user does not want a "recovered" ping for simply resuming data.
+    // Threshold violations (inactive → 'alert') still fire normally.
+    if (oldStatus === 'inactive' && newStatus === 'up') {
+      return;
+    }
+
+    // ── Maintenance suppression ────────────────────────────────────────────────
+    // When in maintenance, skip notifications, live alerts and remediations entirely.
+    if (inMaintenance) {
+      logger.info(
+        `Monitor "${this.config.name}" (id: ${this.config.id}): ` +
+        `status change ${oldStatus} → ${newStatus} suppressed (in maintenance)`,
+      );
+      return;
+    }
+
+    // ── Proxy agent down suppression ──────────────────────────────────────────
+    // When the proxy agent itself is unresponsive, suppress individual monitor
+    // notifications to avoid flooding. The proxy device's own heartbeat monitor
+    // handles the "proxy offline" notification.
+    if (this._suppressNotification) {
+      logger.info(
+        `Monitor "${this.config.name}" (id: ${this.config.id}): ` +
+        `notification suppressed (proxy agent not responding)`,
+      );
+      return;
+    }
+
+    // ── (a) Immediate side effects of every confirmed transition ──────────────
+    // Remediations and bell (live) alerts run right away. They are NOT delayed
+    // by the notification cooldown (an intermediate transition must not lose
+    // its remediation) and NOT filtered by the per-device notification types
+    // (muting 'down' messages for a noisy device must not disable its
+    // auto-remediation or its bell alert). Remediation bindings carry their own
+    // per-binding cooldown. Only problem starts and problem ends trigger them —
+    // e.g. an agent going up → pending for a self-update is neither.
+    if (isProblemStatus(newStatus) || isProblemStatus(oldStatus)) {
+      this.triggerRemediations(oldStatus, newStatus);
+    }
+    await this.addLiveAlerts(oldStatus, newStatus, message, agentViolations);
+
+    // ── (b) Channel notifications: cooldown (debounce) ───────────────────────
+    // Prevents notification spam when metrics oscillate around a threshold.
+    // First notification fires immediately. Subsequent state changes during the
+    // cooldown window are queued — the timer resets on every change. Only when
+    // the state has been stable for the full cooldown period does the queued
+    // notification fire. This applies to ALL transitions (alert, down, up).
+    const cooldownMs = (this.config.notificationCooldownSeconds ?? 0) * 1000;
+    if (cooldownMs > 0 && this.lastNotifiedAt > 0) {
+      // We already sent at least one notification — debounce subsequent ones
+      this.lastStateChangeAt = Date.now();
+      this.pendingNotification = { status: newStatus, message };
+      logger.info(
+        `Monitor "${this.config.name}" (id: ${this.config.id}): ` +
+        `notification queued (cooldown debounce ${this.config.notificationCooldownSeconds}s) — ${oldStatus} → ${newStatus}`,
+      );
+      return;
+    }
+    // First notification or cooldown disabled — send immediately
+    this.lastNotifiedAt = Date.now();
+    this.lastNotifiedStatus = newStatus;
+    this.lastStateChangeAt = Date.now();
+    await this.dispatchChannelNotification(oldStatus, newStatus, message);
+  }
+
+  /** Fire the remediation bindings for a confirmed transition (fire-and-forget). */
+  private triggerRemediations(oldStatus: MonitorStatus, newStatus: MonitorStatus): void {
+    remediationService.triggerForMonitor(
+      this.config.id,
+      this.config.name,
+      this.config.url as string | undefined,
+      this.config.type,
+      this.config.groupId,
+      oldStatus,
+      newStatus,
+    ).catch(err => logger.error(err, `Remediation trigger failed for monitor ${this.config.id}`));
+  }
+
+  /** Incident category of a problem status (live alert stable keys), or null. */
+  private static incidentCategory(status: MonitorStatus): MonitorIncidentCategory | null {
+    if (status === 'down') return 'down';
+    if (status === 'ssl_warning' || status === 'ssl_expired') return 'ssl';
+    if (status === 'alert') return 'alert';
+    return null;
+  }
+
+  /**
+   * Resolve the live alert incidents a confirmed transition ends (sets
+   * resolved_at + NOTIFICATION_RESOLVED; no "recovered" row is inserted any
+   * more):
+   *   - entering a problem: every OTHER category of this monitor is over
+   *     (e.g. DOWN → SSL warning resolves the 'down' incident);
+   *   - 'up': everything is over;
+   *   - other non-problem statuses (pending, paused, maintenance…): over for
+   *     regular monitors; agents only recover to 'up' — a problem → pending /
+   *     inactive change (self-update, suspension) is not a recovery.
+   */
+  private async resolveLiveAlerts(newStatus: MonitorStatus): Promise<void> {
+    try {
+      const tenantId = await this.resolveTenantId();
+      if (tenantId === null) return;
+      const isAgent = !!this.config.agentDeviceId;
+      const category = BaseMonitorWorker.incidentCategory(newStatus);
+      if (category) {
+        await liveAlertService.resolveMonitor(tenantId, this.config.id, category);
+      } else if (newStatus === 'up' || !isAgent) {
+        await liveAlertService.resolveMonitor(tenantId, this.config.id);
+      }
+    } catch (err) {
+      logger.error(err, `Failed to resolve live alerts for monitor ${this.config.id}`);
+    }
+  }
+
+  /**
+   * Raise the live (bell) alert(s) for a confirmed transition into a problem.
+   * One active row per incident (stable key), resolved on recovery by
+   * resolveLiveAlerts:
+   *   - monitor:{id}:down   'critical'
+   *   - monitor:{id}:ssl    'warning' (ssl_warning) / 'critical' (ssl_expired)
+   *   - monitor:{id}:alert  'warning' (alert without per-metric detail)
+   *   - agent-{deviceId}-{metricKey}  'warning', one per violated metric of an
+   *     agent monitor entering 'alert'
+   * Links always point at the monitor page: every user who can read the
+   * monitor can open it, and admins are redirected from there to the device
+   * page (/agents/:id is admin-only).
+   */
+  private async addLiveAlerts(
+    oldStatus: MonitorStatus,
+    newStatus: MonitorStatus,
+    message?: string,
+    agentViolations?: CheckResult['agentViolations'],
+  ): Promise<void> {
+    const category = BaseMonitorWorker.incidentCategory(newStatus);
+    if (!category) return;
+    try {
+      const tenantId = await this.resolveTenantId();
+      if (tenantId === null) return;
+
+      const monitorId = this.config.id;
+      const agentDeviceId = (this.config.agentDeviceId as number | null | undefined) ?? null;
+      const navigateTo = `/monitor/${monitorId}`;
+      const title = agentDeviceId ? await this.resolveAgentDeviceTitle(agentDeviceId) : this.config.name;
+
+      const add = (opts: { severity: LiveAlertSeverity; message: string; stableKey: string }) =>
+        liveAlertService.add(tenantId, { title, navigateTo, monitorId, agentDeviceId, ...opts });
+
+      if (agentDeviceId && newStatus === 'alert' && agentViolations && agentViolations.length > 0) {
+        // Sequential: each raise holds its incident lock and trims the tenant.
+        for (const violation of agentViolations) {
+          await add({
+            severity: 'warning',
+            message: violation.message,
+            stableKey: `agent-${agentDeviceId}-${violation.metricKey}`,
+          });
+        }
+        return;
+      }
+
+      const stableKey = monitorIncidentKey(monitorId, category);
+      // SSL warning ↔ expired: same incident key, new severity — end the
+      // previous row so the current state is the one shown.
+      if (oldStatus !== newStatus && BaseMonitorWorker.incidentCategory(oldStatus) === category) {
+        await liveAlertService.resolve(tenantId, stableKey);
+      }
+      await add({
+        severity: newStatus === 'down' || newStatus === 'ssl_expired' ? 'critical' : 'warning',
+        message: message ?? `Monitor is ${newStatus.toUpperCase()}`,
+        stableKey,
+      });
+    } catch (err) {
+      logger.error(err, `Failed to persist live alert for monitor ${this.config.id}`);
+    }
+  }
+
+  /** Display name of the agent device behind an agent monitor (falls back to the monitor name). */
+  private async resolveAgentDeviceTitle(agentDeviceId: number): Promise<string> {
+    const row = await db('agent_devices')
+      .where({ id: agentDeviceId })
+      .select('name', 'hostname')
+      .first() as { name: string | null; hostname: string | null } | undefined;
+    return row?.name || row?.hostname || this.config.name;
+  }
+
+  /**
+   * Send the channel notifications (the debounced part of a transition).
+   * Applies the per-device notification types (agent monitors) and the group
+   * consolidation. Called by handleStatusChange (first/immediate) and
+   * flushPendingNotification (debounced). The payload is enriched (stableKey,
+   * severity, identity…) by notificationService.sendForMonitor / sendForGroup,
+   * which the Oblidesk plugin requires.
+   */
+  private async dispatchChannelNotification(oldStatus: MonitorStatus, newStatus: MonitorStatus, message?: string): Promise<void> {
+    // ── Notification type filtering for agent monitors ─────────────────────────
+    if (this.config.agentDeviceId) {
+      const types = await notificationService.resolveNotificationTypesForDevice(this.config.agentDeviceId as number);
+      if (!types.global) {
+        logger.info(
+          `Monitor "${this.config.name}" (id: ${this.config.id}): notification suppressed (global=off)`,
+        );
+        return;
+      }
+      if (newStatus === 'down' && !types.down) {
+        logger.info(
+          `Monitor "${this.config.name}" (id: ${this.config.id}): notification suppressed (down type disabled)`,
+        );
+        return;
+      }
+      if (newStatus === 'up' && !types.up) {
+        logger.info(
+          `Monitor "${this.config.name}" (id: ${this.config.id}): notification suppressed (up type disabled)`,
+        );
+        return;
+      }
+      if (newStatus === 'alert' && !types.alert) {
+        logger.info(
+          `Monitor "${this.config.name}" (id: ${this.config.id}): notification suppressed (alert type disabled)`,
+        );
+        return;
+      }
+      if (newStatus === 'pending' && !types.update) {
+        logger.info(
+          `Monitor "${this.config.name}" (id: ${this.config.id}): notification suppressed (update type disabled)`,
+        );
+        return;
+      }
+    }
+
+    try {
+      const groupNotifGroupId = await groupNotificationService.shouldSuppressIndividual(
+        this.config.id,
+        this.config.groupId,
+      );
+
+      if (groupNotifGroupId !== null) {
+        const group = await groupService.getById(groupNotifGroupId);
+
+        if (isProblemStatus(newStatus)) {
+          const result = groupNotificationService.handleMonitorDown(
+            this.config.id,
+            this.config.name,
+            groupNotifGroupId,
+          );
+
+          if (result === 'first_down') {
+            const failing = await groupNotificationService.getFailingMonitorsInGroup(groupNotifGroupId);
+            const failingNames = failing.map(m => m.name);
+            const confirmedNames = failing.filter(m => !m.isRetrying).map(m => m.name);
+            const totalFailing = failing.length;
+
+            let groupMsg: string;
+            if (totalFailing <= 1) {
+              groupMsg = message ?? `Monitor "${this.config.name}" in group "${group!.name}" is ${newStatus.toUpperCase()}`;
+            } else {
+              groupMsg = `${totalFailing} monitor(s) failing in group "${group!.name}": ${failingNames.join(', ')}`;
+            }
+
+            await notificationService.sendForGroup(groupNotifGroupId, group!.name, {
+              monitorName: this.config.name,
+              monitorUrl: this.config.url as string | undefined,
+              oldStatus,
+              newStatus,
+              groupName: group!.name,
+              groupId: groupNotifGroupId,
+              downMonitors: confirmedNames,
+              failingMonitors: failingNames,
+              totalFailingCount: totalFailing,
+              isGroupNotification: true,
+              message: groupMsg,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        } else if (isProblemStatus(oldStatus)) {
+          const result = groupNotificationService.handleMonitorUp(
+            this.config.id,
+            groupNotifGroupId,
+          );
+
+          if (result === 'all_recovered') {
+            await notificationService.sendForGroup(groupNotifGroupId, group!.name, {
+              monitorName: group!.name,
+              oldStatus: 'down',
+              newStatus: 'up',
+              groupName: group!.name,
+              groupId: groupNotifGroupId,
+              downMonitors: [],
+              isGroupNotification: true,
+              message: `All monitors in group "${group!.name}" are back up`,
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+      } else {
+        await notificationService.sendForMonitor(this.config.id, this.config.groupId, {
+          monitorName: this.config.name,
+          monitorUrl: this.config.url as string | undefined,
+          oldStatus,
+          newStatus,
+          message,
+          timestamp: new Date().toISOString(),
+        }, this.config.agentDeviceId as number | null | undefined);
+      }
+    } catch (error) {
+      logger.error(error, `Failed to send notifications for monitor ${this.config.id}`);
+    }
+  }
+
+  /**
+   * Emit a Socket.io event only to users who can see this monitor.
+   * Admins always receive it. Non-admins receive it based on team permissions.
+   */
+  private async emitToVisibleUsers(event: string, payload: unknown): Promise<void> {
+    const tenantId = await this.resolveTenantId();
+
+    // Admins in this tenant only. The legacy `role:admin` fan-out was
+    // removed — it delivered every tenant's events to every other tenant's
+    // admins (cross-tenant leak).
+    if (tenantId !== null) {
+      this.io.to(`tenant:${tenantId}:admin`).emit(event, payload);
+    }
+
+    // Non-admin users with team-based access to this monitor
+    const userIds = await permissionService.getUsersWithMonitorAccess(this.config.id);
+    for (const userId of userIds) {
+      this.io.to(`user:${userId}`).emit(event, payload);
+    }
+  }
+
+  /**
+   * Perform the actual check. Implemented by each monitor type.
+   * Must resolve within this.config.timeoutMs.
+   */
+  abstract performCheck(): Promise<CheckResult>;
+
+  // ── Proxy Agent support (passive, agent-driven) ─────────────────────────
+
+  /** monitorId → { result, receivedAt } — populated by agentHub when the agent pushes results */
+  static proxyResults = new Map<number, { result: CheckResult; receivedAt: number }>();
+
+  /**
+   * Record a result pushed by a proxy agent. Called from agentHub only after
+   * it has checked that the sending device is the monitor's approved proxy in
+   * the same tenant, and rebuilt the result from whitelisted fields.
+   */
+  static recordProxyResult(monitorId: number, result: CheckResult): void {
+    BaseMonitorWorker.proxyResults.set(monitorId, { result, receivedAt: Date.now() });
+  }
+
+  /**
+   * Passive proxy check — reads the latest result pushed by the agent.
+   * If no result has been received within 3× the check interval, the proxy
+   * agent is considered unresponsive (distinct from the target being down).
+   */
+  private performCheckViaProxy(): CheckResult {
+    const entry = BaseMonitorWorker.proxyResults.get(this.config.id);
+
+    if (!entry) {
+      return { status: 'down', message: 'Waiting for first proxy result...', suppressNotification: true };
+    }
+
+    const elapsed = (Date.now() - entry.receivedAt) / 1000;
+    const maxWait = this.config.intervalSeconds * 3;
+
+    if (elapsed > maxWait) {
+      // Proxy agent itself is unresponsive — suppress individual monitor
+      // notifications to avoid flooding. A single "proxy offline" alert is
+      // emitted by the agent device monitor instead.
+      return {
+        status: 'down',
+        message: `Proxy agent not responding (no result for ${Math.round(elapsed)}s, expected every ${this.config.intervalSeconds}s)`,
+        suppressNotification: true,
+      };
+    }
+
+    // Return a copy of the agent's result — the downstream pipeline (retries,
+    // notifications, heartbeats) processes it identically to a local check.
+    // Copying keeps beat()'s upside-down inversion from mutating the stored
+    // entry when the same result is read again (e.g. on a retry tick).
+    return { ...entry.result };
+  }
+
+  /**
+   * Expose the last confirmed (notified) status so subclasses can synthesize
+   * a no-op result (e.g. during the startup grace period) without triggering
+   * a spurious status transition.
+   */
+  protected getConfirmedStatus(): MonitorStatus {
+    return this.confirmedStatus;
+  }
+}

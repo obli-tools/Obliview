@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  installer.wxs - WiX v4 source for the Obli.tools Windows installer
+
+  Requirements:
+    dotnet tool install -global wix
+    wix extension add WixToolset.UI.wixext  (optional, for UI)
+
+  Build (from obli.tools/ directory):
+    wix build installer.wxs -o dist\ObliToolsSetup.msi
+
+  Or use the release pipeline, which handles every step.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Obli.tools"
+      Manufacturer="Obli.tools"
+      Version="DESKTOP_VERSION_PLACEHOLDER"
+      UpgradeCode="A1B2C3D4-E5F6-4789-ABCD-EF0123456789"
+      Compressed="yes">
+
+    <!--
+      Embed the cabinet file directly inside the MSI so the installer is
+      a single self-contained file (no external cab1.cab required).
+    -->
+    <MediaTemplate EmbedCab="yes" />
+
+    <!--
+      MajorUpgrade: silently removes any older version before installing.
+      If the user has a NEWER version, show a friendly error and abort.
+    -->
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of Obli.tools is already installed. Uninstall it first." />
+
+    <!-- Install to %ProgramFiles%\ObliTools\ -->
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="ObliTools">
+
+        <!-- Main component: the executable + Start Menu shortcut -->
+        <Component Id="MainExecutable">
+          <File Source="dist\ObliTools.exe" KeyPath="yes">
+            <Shortcut
+                Id="StartMenuShortcut"
+                Directory="ProgramMenuFolder"
+                Name="Obli.tools"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon"
+                Advertise="no" />
+          </File>
+        </Component>
+
+      </Directory>
+    </StandardDirectory>
+
+    <!-- Desktop shortcut (optional feature, pre-selected) -->
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent">
+        <Shortcut
+            Id="DesktopShortcut"
+            Name="Obli.tools"
+            WorkingDirectory="INSTALLFOLDER"
+            Target="[INSTALLFOLDER]ObliTools.exe"
+            Icon="AppIcon" />
+        <RegistryValue
+            Root="HKCU"
+            Key="Software\Obli.tools\ObliTools"
+            Name="DesktopShortcut"
+            Value="1"
+            Type="integer"
+            KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <!-- Start Menu folder (needed as shortcut target directory) -->
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!-- Feature tree -->
+    <Feature Id="Main" Title="Obli.tools" Level="1" AllowAbsent="no">
+      <ComponentRef Id="MainExecutable" />
+    </Feature>
+
+    <Feature Id="DesktopIcon" Title="Desktop shortcut" Level="1" AllowAbsent="yes">
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+
+    <!-- App icon (title bar, Add/Remove Programs) -->
+    <Icon Id="AppIcon" SourceFile="logo.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPHELPLINK"    Value="https://obli.tools" />
+
+  </Package>
+</Wix>

@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Obliview Agent - Windows MSI Installer
+  Built with WiX v4+ on Windows.
+
+  Prerequisites (one-time setup):
+    dotnet tool install -g wix
+    go install (Go 1.22+, https://go.dev/dl; Go 1.20 at C:\Go1.20 for the nt6 MSI)
+
+  Build (from agent/ directory):
+    done by the release pipeline (wix build, see the nt6 notes below)
+
+  Install command:
+    msiexec /i obliview-agent.msi SERVERURL="https://..." APIKEY="your-key" /quiet
+-->
+<!--
+  Two build lines from this ONE template (same UpgradeCode, service, folder and
+  component GUIDs: an nt6 install upgrades in place like any newer version):
+    - modern (default): Go 1.22+ binary, Windows 10 / Server 2016 or later
+      (the MSI still installs on 8 / 8.1 / 2012 / 2012 R2, see the launch
+      condition below).
+        wix build installer\_product_versioned.wxs -b . -arch x64 -out dist\obliview-agent.msi
+    - nt6 (-d Nt6=1): Go 1.20 binary (C:\Go1.20, -modfile=go120.mod,
+      -X main.buildFlavor=nt6), Windows 7 SP1 / 8.1 / Server 2008 R2 SP1 /
+      2012 / 2012 R2.
+        wix build installer\_product_versioned.wxs -b . -arch x64 -d Nt6=1 -out dist\obliview-agent-nt6.msi
+  -d Nt6=1 switches the product name, the agent binary source and the launch
+  condition. Both release build paths pass it.
+-->
+<?ifdef Nt6?>
+<?define ProductName = "Obliview Agent (Windows 7 / 8.1 / Server 2008 R2 / 2012)"?>
+<?define AgentExeSrc = "dist\obliview-agent-nt6.exe"?>
+<?else?>
+<?define ProductName = "Obliview Agent"?>
+<?define AgentExeSrc = "dist\obliview-agent.exe"?>
+<?endif?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="$(var.ProductName)"
+           Manufacturer="Obliview"
+           Version="AGENT_VERSION_PLACEHOLDER"
+           Language="1033"
+           UpgradeCode="3A7B2C1D-4E5F-6789-ABCD-EF0123456789">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Obliview Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+<?ifndef Nt6?>
+    <!--
+      Modern MSI: refuses only Windows 7 / Server 2008 R2 (VersionNT 601),
+      where its Go 1.22+ binary dies before main(). Windows 8 / 8.1 / Server
+      2012 / 2012 R2 (VersionNT 602 / 603) stay installable ON PURPOSE: agents
+      already deployed there run a version that self-updates with this MSI
+      (it does not know the nt6 line) and exits before msiexec runs, so a
+      refused install would leave the service stopped. Once this version is
+      installed, the agent moves itself to obliview-agent-nt6.msi at its next
+      update (currentAgentMSIName / osNeedsNT6Build).
+      Do NOT tighten this to Windows 10 only before every field agent has gone
+      through a release that knows the nt6 line.
+      "Installed" keeps repair / uninstall possible on any system.
+    -->
+    <Launch Condition="Installed OR (VersionNT &gt; 601)"
+            Message="This Obliview Agent package requires Windows 8 / Windows Server 2012 or later. For Windows 7 SP1 / Windows Server 2008 R2 SP1 install obliview-agent-nt6.msi." />
+<?else?>
+    <!-- nt6 MSI: Windows 7 SP1 / Server 2008 R2 SP1 (VersionNT 601) or later. -->
+    <Launch Condition="Installed OR (VersionNT &gt; 601) OR (VersionNT = 601 AND ServicePackLevel &gt;= 1)"
+            Message="This Obliview Agent package requires Windows 7 SP1 / Windows Server 2008 R2 SP1 or later." />
+<?endif?>
+
+    <!-- Properties passed via: msiexec /i ... SERVERURL="..." APIKEY="..." -->
+    <Property Id="SERVERURL" Secure="yes" />
+    <Property Id="APIKEY" Secure="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ObliviewAgent">
+
+        <!--
+          The Go binary is a proper Windows service executable.
+          It calls SetServiceStatus(SERVICE_RUNNING) via golang.org/x/sys/windows/svc,
+          so the MSI Wait="yes" (default) resolves normally without hanging.
+          The url and key flags are passed as service arguments; on first run the
+          agent writes config.json and from then on reads that file directly.
+        -->
+        <Component Id="AgentExe" Guid="A1B2C3D4-E5F6-7890-ABCD-EF1234560001">
+          <!--
+            DefaultVersion forces MSI to always overwrite the exe even when the binary on disk
+            has no Win32 version resource (Go binaries are unversioned by default).
+            Without this, MSI may skip the copy if it finds an "unversioned but modified" file
+            on disk (e.g. leftover from a failed previous install), leaving the wrong binary in place.
+            65535.0.0.0 is always greater than any real version, so the source file always wins.
+          -->
+          <File Id="AgentExeFile" Source="$(var.AgentExeSrc)" Name="obliview-agent.exe"
+                DefaultVersion="65535.0.0.0" />
+          <ServiceInstall Id="AgentSvc"
+                          Name="ObliviewAgent"
+                          DisplayName="Obliview Monitoring Agent"
+                          Description="Sends system metrics to the Obliview monitoring platform."
+                          Start="auto"
+                          Type="ownProcess"
+                          Account="LocalSystem"
+                          ErrorControl="normal"
+                          Arguments='--url "[SERVERURL]" --key "[APIKEY]"' />
+          <ServiceControl Id="AgentSvcStart" Name="ObliviewAgent" Start="install" />
+          <ServiceControl Id="AgentSvcStop"  Name="ObliviewAgent" Stop="both" Remove="uninstall" Wait="yes" />
+        </Component>
+
+        <!--
+          NOTE: PawnIO kernel driver was previously bundled here under the
+          (mistaken) belief that LibreHardwareMonitorLib required it. It does
+          NOT — LHM ships and loads its own WinRing0 driver embedded inside
+          LibreHardwareMonitorLib.dll at runtime. PawnIO was installed as a
+          parallel kernel driver doing nothing for our pipeline, and turned
+          out to be the source of fleet-wide BSODs (confirmed via WinDbg
+          !analyze -v on MEMORY.DMP pointing PawnIO.sys). Removed in 1.6.8.
+          The Uninstall-Obliview-PawnIO.ps1 mitigation script in this folder
+          handles cleanup on hosts that already have PawnIO installed from a
+          previous version.
+        -->
+
+        <!--
+          Registry fallback: agent reads these on first run if config.json is absent
+          and the service arguments are not yet parsed (edge cases).
+          Written to 64-bit hive via -arch x64 build flag.
+        -->
+        <Component Id="AgentConfig" Guid="B2C3D4E5-F6A7-8901-BCDE-EF1234560002">
+          <RegistryValue Root="HKLM" Key="SOFTWARE\ObliviewAgent"
+                         Name="ServerUrl" Type="string" Value="[SERVERURL]" KeyPath="yes" />
+          <RegistryValue Root="HKLM" Key="SOFTWARE\ObliviewAgent"
+                         Name="ApiKey"    Type="string" Value="[APIKEY]" />
+        </Component>
+
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main">
+      <ComponentRef Id="AgentExe" />
+      <ComponentRef Id="AgentConfig" />
+    </Feature>
+
+  </Package>
+</Wix>
